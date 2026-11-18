@@ -9,6 +9,13 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 
 ---
 
+## Code Buddy
+
+Code Buddy's design routes tasks to expert sessions and stages the selected third-party skills in their workspaces.
+To try a pinned third-party skill in a separate Codex workspace, see
+[Install and try expert skills](./docs/code-buddy-expert-skills.md).
+The [runtime design](./docs/code-buddy-dynamic-skills.md) explains routing, updates, and rollback.
+
 ## Quickstart
 
 ### Installing and running Codex CLI
