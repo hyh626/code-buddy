@@ -15,6 +15,39 @@ Codex 源码基线 `b78fa4af8636859f4acc4d57420e41e923c84cdd`
 需要单独的宿主集成。前次实验中，两项经验生成了候选角色，CSV 对照没有发现候选相对
 普通 UX 的额外实质贡献。职业技能可以提供更强的初始方法，其效果仍由对照验证。
 
+## 运行示意
+
+```mermaid
+flowchart TB
+    subgraph task["按任务派单"]
+        request["用户提出任务"] --> main["主 Codex 调用 Code Buddy"]
+        main --> route["Harness 按能力匹配专家"]
+        route --> pin["每项派单锁定技能、经验版本和权限"]
+        pin --> ux["独立 UX session<br/>加载获选评审技能"]
+        pin --> qa["独立 QA session<br/>加载获选测试技能"]
+        ux --> result["主 Codex 汇总结果"]
+        qa --> result
+    end
+
+    skills[("已生效的技能版本")] --> pin
+    experience[("已生效的项目经验")] --> pin
+    result --> feedback["记录采纳、纠正或否决"]
+    feedback --> learn["验证可复用的经验"]
+    learn --> experience
+
+    subgraph update["后台更新上游技能"]
+        check["检查上游版本"] --> stage["暂存候选，核对依赖、许可和权限"]
+        stage --> evaluate{"新旧版本对照通过？"}
+        evaluate -->|通过| promote["晋升候选版本"]
+        evaluate -->|未通过| keep["继续使用当前版本"]
+    end
+
+    route -. 到期触发 .-> check
+    promote --> skills
+```
+
+候选晋升后的新任务使用新版。进行中的任务和原派单 ID 的重试继续读取各自锁定的版本。
+
 ## 一次派单
 
 假设主会话收到「评审 CSV 导入页面的可达性，再看失败时怎么恢复」。
