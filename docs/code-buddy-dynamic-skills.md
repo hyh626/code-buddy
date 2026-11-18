@@ -10,10 +10,11 @@ Codex 源码基线 `b78fa4af8636859f4acc4d57420e41e923c84cdd`
 把匹配的技能包与项目经验交给本次专家 session。上游有更新时，harness 先把新版本
 作为候选跑对照，达到质量和权限要求后再切换。正在执行的任务固定使用派单时选定的版本。
 
-当前原型用 skill 提示主会话调用 Python harness，再由主会话启动子 agent。这里
-设计的运行时入口负责执行和记账，覆盖通过它提交的任务。普通 Codex turn 的自动接入
-需要单独的宿主集成。前次实验中，两项经验生成了候选角色，CSV 对照没有发现候选相对
-普通 UX 的额外实质贡献。职业技能可以提供更强的初始方法，其效果仍由对照验证。
+本地实验原型由主会话调用 Python harness、启动子 agent，再写回试跑结果。本分支
+记录的是拟实现的运行时入口，它负责执行和记账，覆盖通过它提交的任务。普通 Codex
+turn 的自动接入需要单独的宿主集成。一次本地试跑中，两项经验生成了候选角色，
+CSV 对照未观察到候选相对普通 UX 的额外实质贡献。职业技能可以提供更强的初始
+方法，其效果仍由对照验证。
 
 ## 运行示意
 
@@ -57,24 +58,26 @@ flowchart TB
    评审，`failure-recovery` 命中已有的项目经验。路由记录所选能力、为何命中和
    使用的来源版本。置信度不足时用普通评审，并记录按什么线索走了 fallback。
 2. **锁定输入。** harness 为每个任务生成独立的派单记录，锁定专家版本、技能包
-   摘要、项目经验版本、材料引用和工具权限。一个专家的多个任务各自启动 session，
+   摘要、项目经验版本、材料引用及内容摘要、工具权限。一个专家的多个任务各自启动 session，
    共享相同的只读版本快照。运行中的 session 根据其快照复现。
 3. **加载与执行。** harness 先为专家准备仅含获选技能的只读目录，再启动独立的
-   Codex app-server worker。用 `skills/list` 确认选中版本的路径可用，随后在该
-   worker 的 `turn/start` 中按路径明确传入技能。专家同时收到当前问题、材料和项目经验。
+   Codex app-server worker。用 `skills/list` 核对该 worker 发现的技能，随后在该
+   worker 的 `turn/start` 中按路径明确传入选中的版本。专家同时收到当前问题、
+   材料和项目经验。
    主会话只接收派单摘要、进度和专家的交付结果。
 4. **回写。** harness 订阅 worker 生命周期事件，把实际启动的 thread、技能版本、
    结束状态和发现关联到派单记录。用户采纳、纠正或否决发现后，再记录决定及证据。
-   同一个派单 ID 的重试续用原版本。尚未完成的任务保留可排查的状态，已落库结果按
-   派单及发现 ID 去重。worker 退出后释放并发名额，宿主对未退出的进程设定清理时限。
+   同一个派单 ID 的重试续用原版本，并递增执行编号。写回时核对派单状态和执行编号，
+   只接收当前执行的结果，发现按派单及发现 ID 去重。worker 退出后释放并发名额，
+   宿主对未退出的进程设定清理时限。
 
 主会话和 worker 之间的最小合同如下。字段值是示意。
 
 ```text
-dispatch: task_id, project_id, capability, worker_id, state
+dispatch: task_id, project_id, capability, worker_id, attempt, state
 pin:      role_version, skill_source, upstream_commit, bundle_sha256, experience_version
-input:    brief, artifact_refs, tool_policy
-result:   thread_id, status, findings[], elapsed_ms
+input:    brief, artifact_refs, artifact_digests, tool_policy
+result:   thread_id, attempt, status, findings[], elapsed_ms
 feedback: finding_id, verdict, decision, evidence_ref
 ```
 
@@ -86,9 +89,11 @@ feedback: finding_id, verdict, decision, evidence_ref
 
 - **原生路径。** `turn/start` 支持 `{type: "skill", name, path}`，路径必须匹配
   已发现且启用的 skill。`skills/extraRoots/set` 修改的是该 app-server 的共享
-  服务状态，所以每个 worker 进程拥有自己的固定根目录。运行中的共享进程里反复切换
-  根目录会让并行任务争用同一状态。MVP 为每个执行分配独立 worker，后续可按相同
-  技能集合与权限复用空闲进程。[输入协议](https://github.com/openai/codex/blob/b78fa4af8636859f4acc4d57420e41e923c84cdd/codex-rs/app-server-protocol/src/protocol/v2/turn.rs#L481) · [技能选择](https://github.com/openai/codex/blob/b78fa4af8636859f4acc4d57420e41e923c84cdd/codex-rs/skills/src/selection.rs#L63) · [根目录作用域](https://github.com/openai/codex/blob/b78fa4af8636859f4acc4d57420e41e923c84cdd/codex-rs/app-server/src/request_processors/catalog_processor.rs#L632)
+  服务状态，所以每个 worker 进程拥有自己的固定额外根目录。Codex 会合并额外根目录、
+  用户配置、插件和项目技能。严格限定目录时，宿主用精简的 worker 配置与任务目录，
+  然后将 `skills/list` 中所有启用的技能路径与允许清单比对。只有发现集合符合
+  配置才启动这次专家任务。MVP 为每次执行分配独立 worker，后续可按相同技能集合
+  与权限复用空闲进程。[输入协议](https://github.com/openai/codex/blob/b78fa4af8636859f4acc4d57420e41e923c84cdd/codex-rs/app-server-protocol/src/protocol/v2/turn.rs#L481) · [技能选择](https://github.com/openai/codex/blob/b78fa4af8636859f4acc4d57420e41e923c84cdd/codex-rs/skills/src/selection.rs#L63) · [额外根目录的作用域](https://github.com/openai/codex/blob/b78fa4af8636859f4acc4d57420e41e923c84cdd/codex-rs/app-server/src/request_processors/catalog_processor.rs#L632) · [根目录合并逻辑](https://github.com/openai/codex/blob/b78fa4af8636859f4acc4d57420e41e923c84cdd/codex-rs/ext/skills/src/host_roots.rs#L101)
 - **原型过渡。** 当前 skill 可以先把锁定的本地技能正文或路径交给指定子 agent。
   这能验证任务上下文，目录可见性和工具权限由 worker 宿主另行执行。正式入口使用
   app-server 协议。所检查的 TypeScript SDK 输入类型公开的是文本和本地图片。
@@ -124,9 +129,12 @@ worker 的默认工作面是按任务准备的材料目录和选中的只读技�
    的发现盲化后去重。缺失的运行或证据按待验证处理。首版可先覆盖一个 UI
    检查和一个 QA 测试场景，量出与普通专家的差异。
 4. **原子切换。** 通过任务验收条件且权限范围一致的更新，按已设置的更新策略
-   自动晋升。用 compare-and-swap 更新当前版本，确保并行评估基于同一个旧版本。
-   保存旧摘要与评估记录，回滚时把当前指针指回确定的旧版。评估未完成的来源继续
-   走原版本。运行和回放仍能读取其锁定的快照。
+   自动晋升。用 compare-and-swap 更新整个生效组合，前置条件包含评估时的
+   技能摘要、项目经验版本、工具策略、模型、评估集版本和生效记录的递增代数。
+   晋升和回滚都会推进代数，之前发出的评估随之过期。比如技能和经验候选
+   同时基于 `S0 + E0` 通过对照，先晋升 `S1 + E0` 后，经验候选须基于
+   `S1` 重试。保存已验证组合与评估记录，回滚时恢复一组已知的技能和经验版本。
+   待评估或运行中的任务仍使用各自锁定的快照。
 
 项目经验作为独立的版本层。把「错误行号应该和导入文件一致」这类被验证的项目
 方法记入经验版本，保留原始评审引用。更新上游规范时可以继续使用同一份项目经验。
@@ -138,14 +146,15 @@ worker 的默认工作面是按任务准备的材料目录和选中的只读技�
 
 | 验证项 | 通过标准 | 状态 |
 | --- | --- | --- |
-| 技能目录作用域 | 主进程看不到两项测试用 skill，每个 worker 只发现分给自己的那个 | 本地 app-server 目录验证，见下 |
+| 技能目录作用域 | 主进程看不到两项测试用 skill，每个 worker 在这两个测试 skill 中只发现分给自己的那个 | 本地 app-server 目录验证，见下 |
 | 真正的按需派单 | 从一条任务启动 worker，验证实际收到的技能摘要和本轮使用的引用文件 | 待实现 |
 | 版本更新可回滚 | 待评估包不能被正常派单，晋升后新任务用新摘要，进行中任务继续用旧摘要 | 待实现 |
 | 技能与经验的增益 | 比较普通专家、开源技能专家、同一开源技能加项目经验三个条件。独立盲评后记录可用发现、误报和耗时 | 待执行 |
 
 目录验证只调用本地 Codex app-server 的 RPC，使用三份临时运行状态和两项合成技能。
 通过 `skills/extraRoots/set` 分别设置两个 worker，再用 `skills/list` 读回。
-这个检查覆盖发现范围。实际模型执行、工具沙盒和更新晋升需要各自的集成验证。
+这个检查覆盖两项合成技能的发现范围。有效技能允许清单、实际模型执行、工具
+沙盒和更新晋升需要各自的集成验证。
 
 ## 开源来源清单
 
