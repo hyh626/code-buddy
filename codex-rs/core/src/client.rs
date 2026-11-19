@@ -92,6 +92,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
 use codex_protocol::models::BaseInstructionsProvenance;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -134,6 +135,8 @@ use crate::client_common::ResponseStream;
 use crate::client_common::SamplingStream;
 use crate::context::BaseInstructionsFragment;
 use crate::context::ContextualUserFragment;
+use crate::context::ModelInstructions;
+use crate::context::ModelSwitchInstructions;
 use crate::cyber_access_program;
 use crate::feedback_tags;
 use crate::responses_metadata::CodexResponsesMetadata;
@@ -1249,8 +1252,21 @@ impl ModelClient {
         )
         .then(|| prompt.base_instructions.text.clone());
         if instructions.is_some() {
-            // This override also supersedes base instructions inherited from history.
-            input.retain(|item| BaseInstructionsFragment::text_from_item(item).is_none());
+            // The override also supersedes base and model-switch instructions in history.
+            input.retain(|item| {
+                BaseInstructionsFragment::text_from_item(item).is_none()
+                    && !matches!(
+                        item,
+                        ResponseItem::Message { role, content, .. }
+                            if role == "developer"
+                                && matches!(
+                                    content.as_slice(),
+                                    [ContentItem::InputText { text }]
+                                        if ModelSwitchInstructions::matches_text(text)
+                                            || ModelInstructions::matches_text(text)
+                                )
+                    )
+            });
         } else if !prompt.base_instructions.text.is_empty() {
             let mut instructions = ContextualUserFragment::into(BaseInstructionsFragment(
                 prompt.base_instructions.text.clone(),

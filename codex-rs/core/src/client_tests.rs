@@ -17,6 +17,8 @@ use crate::AttestationProvider;
 use crate::GenerateAttestationFuture;
 use crate::context::BaseInstructionsFragment;
 use crate::context::ContextualUserFragment;
+use crate::context::ModelInstructions;
+use crate::context::ModelSwitchInstructions;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::MAX_MCP_ATTRIBUTION_BYTES;
 use crate::responses_metadata::MCP_ATTRIBUTION_CLIENT_METADATA_KEY;
@@ -1019,7 +1021,14 @@ fn custom_base_instructions_use_the_top_level_responses_field() -> anyhow::Resul
         "Previous instructions.".to_string(),
     ));
     let prompt = Prompt {
-        input: vec![previous_base],
+        input: vec![
+            previous_base,
+            ContextualUserFragment::into(ModelSwitchInstructions::new("Old model prompt.")),
+            ContextualUserFragment::into(ModelInstructions {
+                model: Some("old-model".to_string()),
+                instructions: Some("Earlier prompt.".to_string()),
+            }),
+        ],
         base_instructions: BaseInstructions {
             text: instructions.to_string(),
             provenance: Some(BaseInstructionsProvenance::Custom),
@@ -1058,7 +1067,7 @@ fn custom_base_instructions_use_the_top_level_responses_field() -> anyhow::Resul
             Some("instructions_changed"),
         );
     }
-    assert_eq!(prompt.input.len(), 1);
+    assert_eq!(prompt.input.len(), 3);
     Ok(())
 }
 
