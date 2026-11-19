@@ -1182,6 +1182,7 @@ mod tests {
 
     fn assert_serialized_request(country_code: Option<&str>, expected_country: Option<Value>) {
         let api_request = ResponsesApiRequest {
+            instructions: None,
             request_country: country_code
                 .map(codex_protocol::RequestCountry::from_iso_code)
                 .transpose()
