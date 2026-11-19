@@ -106,6 +106,7 @@ use codex_protocol::items::PlanItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::build_hook_prompt_message;
 use codex_protocol::models::BaseInstructions;
+use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseItem;
@@ -1973,7 +1974,11 @@ pub(crate) fn build_prompt(
             step_context.tool_router.model_visible_specs()
         },
         parallel_tool_calls: true,
-        base_instructions: if incremental_tools {
+        base_instructions: if incremental_tools
+            && !matches!(
+                base_instructions.provenance,
+                Some(BaseInstructionsProvenance::Custom)
+            ) {
             BaseInstructions {
                 text: String::new(),
                 provenance: None,

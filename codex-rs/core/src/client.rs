@@ -91,6 +91,8 @@ use codex_protocol::auth::AuthMode;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
+use codex_protocol::models::BaseInstructionsProvenance;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -133,6 +135,8 @@ use crate::client_common::ResponseStream;
 use crate::client_common::SamplingStream;
 use crate::context::BaseInstructionsFragment;
 use crate::context::ContextualUserFragment;
+use crate::context::ModelInstructions;
+use crate::context::ModelSwitchInstructions;
 use crate::cyber_access_program;
 use crate::feedback_tags;
 use crate::responses_metadata::CodexResponsesMetadata;
@@ -440,6 +444,7 @@ fn responses_request_properties_mismatch(
 ) -> Option<&'static str> {
     let ResponsesApiRequest {
         model: previous_model,
+        instructions: previous_instructions,
         input: _,
         tools: previous_tools,
         tool_choice: previous_tool_choice,
@@ -459,6 +464,7 @@ fn responses_request_properties_mismatch(
     } = previous;
     let ResponsesApiRequest {
         model: current_model,
+        instructions: current_instructions,
         input: _,
         tools: current_tools,
         tool_choice: current_tool_choice,
@@ -481,6 +487,8 @@ fn responses_request_properties_mismatch(
     // referenced by `previous_response_id`.
     let reason = if previous_model != current_model {
         "model_changed"
+    } else if previous_instructions != current_instructions {
+        "instructions_changed"
     } else if previous_tools != current_tools {
         "tools_changed"
     } else if previous_tool_choice != current_tool_choice {
@@ -1238,7 +1246,28 @@ impl ModelClient {
         } else {
             Some(create_tools_raw_json_for_responses_api(&prompt.tools)?.into())
         };
-        if !prompt.base_instructions.text.is_empty() {
+        let instructions = matches!(
+            prompt.base_instructions.provenance,
+            Some(BaseInstructionsProvenance::Custom)
+        )
+        .then(|| prompt.base_instructions.text.clone());
+        if instructions.is_some() {
+            // The override also supersedes base and model-switch instructions in history.
+            input.retain(|item| {
+                BaseInstructionsFragment::text_from_item(item).is_none()
+                    && !matches!(
+                        item,
+                        ResponseItem::Message { role, content, .. }
+                            if role == "developer"
+                                && matches!(
+                                    content.as_slice(),
+                                    [ContentItem::InputText { text }]
+                                        if ModelSwitchInstructions::matches_text(text)
+                                            || ModelInstructions::matches_text(text)
+                                )
+                    )
+            });
+        } else if !prompt.base_instructions.text.is_empty() {
             let mut instructions = ContextualUserFragment::into(BaseInstructionsFragment(
                 prompt.base_instructions.text.clone(),
             ));
@@ -1321,6 +1350,7 @@ impl ModelClient {
         let client_metadata = responses_metadata.client_metadata(include_internal);
         let request = ResponsesApiRequest {
             model: model_info.slug.clone(),
+            instructions,
             input,
             tools,
             tool_choice: "auto".to_string(),

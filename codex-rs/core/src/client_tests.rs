@@ -15,6 +15,10 @@ use super::X_OPENAI_SUBAGENT_HEADER;
 use crate::AttestationContext;
 use crate::AttestationProvider;
 use crate::GenerateAttestationFuture;
+use crate::context::BaseInstructionsFragment;
+use crate::context::ContextualUserFragment;
+use crate::context::ModelInstructions;
+use crate::context::ModelSwitchInstructions;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::MAX_MCP_ATTRIBUTION_BYTES;
 use crate::responses_metadata::MCP_ATTRIBUTION_CLIENT_METADATA_KEY;
@@ -54,6 +58,7 @@ use codex_protocol::mcp::McpAttribution;
 use codex_protocol::mcp::McpAttributionSource;
 use codex_protocol::mcp::McpAttributionStatus;
 use codex_protocol::models::BaseInstructions;
+use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ExecutedToolCall;
 use codex_protocol::models::FunctionCallOutputPayload;
@@ -1005,6 +1010,64 @@ fn websocket_incremental_reuse_tracks_raw_result_metadata() -> anyhow::Result<()
             "{scenario}",
         );
     }
+    Ok(())
+}
+
+#[test]
+fn custom_base_instructions_use_the_top_level_responses_field() -> anyhow::Result<()> {
+    let client = test_model_client(SessionSource::Cli);
+    let instructions = "You are CodeBuddy.\nAs CodeBuddy, assist the user.";
+    let previous_base = ContextualUserFragment::into(BaseInstructionsFragment(
+        "Previous instructions.".to_string(),
+    ));
+    let prompt = Prompt {
+        input: vec![
+            previous_base,
+            ContextualUserFragment::into(ModelSwitchInstructions::new("Old model prompt.")),
+            ContextualUserFragment::into(ModelInstructions {
+                model: Some("old-model".to_string()),
+                instructions: Some("Earlier prompt.".to_string()),
+            }),
+        ],
+        base_instructions: BaseInstructions {
+            text: instructions.to_string(),
+            provenance: Some(BaseInstructionsProvenance::Custom),
+        },
+        ..Default::default()
+    };
+    let responses_metadata = test_responses_metadata_for_client(
+        &client,
+        /*turn_id*/ None,
+        format!("{}:0", client.state.thread_id),
+        /*parent_thread_id*/ None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    for responses_lite in [false, true] {
+        let mut model = test_model_info();
+        model.use_responses_lite = responses_lite;
+        let request = client.build_responses_request(
+            &prompt,
+            &model,
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            /*service_tier*/ None,
+            &responses_metadata,
+            /*include_internal*/ false,
+        )?;
+        let http = serde_json::to_value(&request)?;
+        let websocket = serde_json::to_value(codex_api::ResponseCreateWsRequest::from(&request))?;
+        for body in [http, websocket] {
+            assert_eq!(body["instructions"], json!(instructions));
+            assert_eq!(body["input"], json!([]));
+        }
+        let mut changed = request.clone();
+        changed.instructions = Some("Updated instructions.".to_string());
+        assert_eq!(
+            super::responses_request_properties_mismatch(&request, &changed),
+            Some("instructions_changed"),
+        );
+    }
+    assert_eq!(prompt.input.len(), 3);
     Ok(())
 }
 
