@@ -207,6 +207,7 @@ impl HousekeeperSampler {
             }
         }
         ResponsesApiRequest {
+            instructions: None,
             request_country: Default::default(),
             model: self.model.slug.clone(),
             input,
